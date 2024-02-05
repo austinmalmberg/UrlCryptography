@@ -9,16 +9,16 @@ using Microsoft.Extensions.Primitives;
 using System.Reflection;
 using System.Security.Cryptography;
 
-namespace UrlCryptography;
+namespace UrlEncryption;
 
 /// <summary>
-/// An <see cref="IResourceFilter"/> that runs before model binding and sets the <see cref="QueryDecryptionFeature"/> on the request.
+/// An <see cref="IResourceFilter"/> that runs before model binding and sets the <see cref="QueryEncryptionFeature"/> on the request.
 /// </summary>
-public class QueryCollectionDecryptionFilter : IResourceFilter
+public class QueryCollectionEncryptionFilter : IResourceFilter
 {
     public void OnResourceExecuting(ResourceExecutingContext context)
     {
-        IQueryFeature queryFeature = new QueryDecryptionFeature(context.HttpContext);
+        IQueryFeature queryFeature = new QueryEncryptionFeature(context.HttpContext);
         context.HttpContext.Features.Set<IQueryFeature>(queryFeature);
     }
 
@@ -28,62 +28,63 @@ public class QueryCollectionDecryptionFilter : IResourceFilter
 }
 
 /// <summary>
-/// Extension methods for configuring <see cref="QueryDecryptionMiddleware"/>.
+/// Extension methods for configuring query encryption.
 /// </summary>
-public static class QueryDecryptionMiddlewareExtensions
+public static class QueryEncryptionMiddlewareExtensions
 {
     /// <summary>
-    /// Configures necessary services for the <see cref="QueryDecryptionMiddleware"/> to function.
+    /// Configures necessary services for the middleware to function.
     /// 
-    /// Uses default <see cref="QueryDecryptionOptions"/> values.
+    /// Uses default <see cref="QueryEncryptionOptions"/> values.
     /// </summary>
     /// <param name="services"></param>
     /// <returns></returns>
-    public static IServiceCollection AddQueryDecryption(this IServiceCollection services)
+    public static IServiceCollection AddQueryEncryption(this IServiceCollection services)
     {
-        services.AddQueryDecryption(options => { });
+        services.AddQueryEncryption(options => { });
 
         return services;
     }
 
     /// <summary>
-    /// Configures necessary services for the <see cref="QueryDecryptionMiddleware"/> to function.
+    /// Configures necessary services for the middleware to function.
     /// </summary>
     /// <param name="services"></param>
     /// <param name="configureOptions"></param>
     /// <returns></returns>
-    public static IServiceCollection AddQueryDecryption(this IServiceCollection services, Action<QueryDecryptionOptions> configureOptions)
+    public static IServiceCollection AddQueryEncryption(this IServiceCollection services, Action<QueryEncryptionOptions> configureOptions)
     {
         services.Configure<MvcOptions>(options =>
         {
-            options.Filters.Add<QueryCollectionDecryptionFilter>();
+            options.Filters.Add<QueryCollectionEncryptionFilter>();
         });
 
         services.AddDataProtection();
-        services.AddTransient<IQueryCryptographyDataProtectionProvider, QueryDecryptionDataProtectionProvider>();
+        services.AddTransient<IQueryEncryptionDataProtectionProvider, QueryEncryptionDataProtectionProvider>();
+
         services.AddTransient<IQueryCollectionProvider, GreedyQueryCollectionDecryptionProvider>();
 
-        services.Configure<QueryDecryptionOptions>(configureOptions);
+        services.Configure<QueryEncryptionOptions>(configureOptions);
 
         return services;
     }
 }
 
-public class QueryDecryptionFeature : QueryFeature
+public class QueryEncryptionFeature : QueryFeature
 {
-    public QueryDecryptionFeature(HttpContext context)
+    public QueryEncryptionFeature(HttpContext context)
         : base(context.Features)
     {
         IQueryCollectionProvider queryCollectionProvider = context.RequestServices
             .GetRequiredService<IQueryCollectionProvider>();
 
         // overwrite the base query collection
-        Query = queryCollectionProvider.GetQueryCollection(Query);
+        Query = queryCollectionProvider.GetQueryCollection(context);
     }
 }
 
 /// <summary>
-/// An interface that provides functionality for generating a new query collection from an existing one. 
+/// An interface that provides functionality for generating a new <see cref="IQueryCollection"/> from an existing one. 
 /// </summary>
 public interface IQueryCollectionProvider
 {
@@ -92,7 +93,7 @@ public interface IQueryCollectionProvider
     /// </summary>
     /// <param name="query">The existing query collection.</param>
     /// <returns>A new iteration on the <paramref name="query"/>.</returns>
-    IQueryCollection GetQueryCollection(IQueryCollection query);
+    IQueryCollection GetQueryCollection(HttpContext context);
 }
 
 /// <summary>
@@ -100,13 +101,13 @@ public interface IQueryCollectionProvider
 /// </summary>
 /// <param name="dataProtectionProvider"></param>
 public class GreedyQueryCollectionDecryptionProvider(
-    IQueryCryptographyDataProtectionProvider dataProtectionProvider) : IQueryCollectionProvider
+    IQueryEncryptionDataProtectionProvider dataProtectionProvider) : IQueryCollectionProvider
 {
     private readonly IDataProtector _dataProtector = dataProtectionProvider.CreateProtector();
 
-    public IQueryCollection GetQueryCollection(IQueryCollection query)
+    public IQueryCollection GetQueryCollection(HttpContext context)
     {
-        Dictionary<string, StringValues> decryptedQueryDictionary = query
+        Dictionary<string, StringValues> decryptedQueryDictionary = context.Request.Query
             .Select(kv =>
             {
                 StringValues value = kv.Value;
@@ -136,16 +137,16 @@ public class GreedyQueryCollectionDecryptionProvider(
 /// <param name="decryptionOptions"></param>
 public class DynamicQueryCollectionDecryptionProvider(
     ILogger<DynamicQueryCollectionDecryptionProvider> logger,
-    IQueryCryptographyDataProtectionProvider dataProtectionProvider,
-    IOptions<QueryDecryptionOptions> decryptionOptions) : IQueryCollectionProvider
+    IQueryEncryptionDataProtectionProvider dataProtectionProvider,
+    IOptions<QueryEncryptionOptions> decryptionOptions) : IQueryCollectionProvider
 {
     private readonly ILogger<DynamicQueryCollectionDecryptionProvider> _logger = logger;
     private readonly IDataProtector _dataProtector = dataProtectionProvider.CreateProtector();
-    private readonly QueryDecryptionOptions _decryptionOptions = decryptionOptions.Value;
+    private readonly QueryEncryptionOptions _decryptionOptions = decryptionOptions.Value;
 
-    public IQueryCollection GetQueryCollection(IQueryCollection query)
+    public IQueryCollection GetQueryCollection(HttpContext context)
     {
-        Dictionary<string, StringValues> queryDictionary = new Dictionary<string, StringValues>(query);
+        Dictionary<string, StringValues> queryDictionary = new Dictionary<string, StringValues>(context.Request.Query);
 
         // TODO: Get ActionDescriptor parameters
         // Not currently possible since the middleware is added before routing
@@ -226,6 +227,11 @@ public class DynamicQueryCollectionDecryptionProvider(
             .SelectMany(GetDecryptionContexts);
     }
 
+    /// <summary>
+    /// Returns a resursive list of <see cref="QueryParameterDecryptionContext"/> for the given <paramref name="propertyInfo"/>.
+    /// </summary>
+    /// <param name="propertyInfo"></param>
+    /// <returns></returns>
     private IEnumerable<QueryParameterDecryptionContext> GetDecryptionContexts(PropertyInfo propertyInfo)
     {
         List<QueryParameterDecryptionContext> result = [];
@@ -273,23 +279,32 @@ public class DynamicQueryCollectionDecryptionProvider(
     }
 }
 
-public class QueryDecryptionOptions
+public class QueryEncryptionOptions
 {
-    public string Purpose { get; set; } = typeof(QueryDecryptionOptions).FullName
-        ?? nameof(QueryDecryptionOptions);
+    /// <summary>
+    /// Gets or sets the purpose used by the <see cref="IQueryEncryptionDataProtectionProvider"/> to encrypt and decrypt query parameters.
+    /// 
+    /// <para>
+    /// See <see cref="IDataProtectionProvider.CreateProtector(string)"/>.
+    /// </para>
+    /// </summary>
+    public string Purpose { get; set; } = typeof(QueryEncryptionOptions).FullName
+        ?? nameof(QueryEncryptionOptions);
 
     public bool IgnoreUnencryptedQueryParameterWarnings { get; set; } = false;
-    public bool ShowFullCryptographicException { get; set; } = false;
+
+    [Obsolete("TODO: implement")]
+    public bool EncryptEntireQueryString { get; set; } = false;
 }
 
-public interface IQueryCryptographyDataProtectionProvider : ICryptographyMiddlewareDataProtectionProvider { }
+public interface IQueryEncryptionDataProtectionProvider : ICryptographyMiddlewareDataProtectionProvider { }
 
-public class QueryDecryptionDataProtectionProvider(
+public class QueryEncryptionDataProtectionProvider(
     IDataProtectionProvider provider,
-    IOptions<QueryDecryptionOptions> queryDecryptionOptions) : IQueryCryptographyDataProtectionProvider
+    IOptions<QueryEncryptionOptions> queryEncryptionOptions) : IQueryEncryptionDataProtectionProvider
 {
     private readonly IDataProtectionProvider _provider = provider;
-    private readonly QueryDecryptionOptions _options = queryDecryptionOptions.Value;
+    private readonly QueryEncryptionOptions _options = queryEncryptionOptions.Value;
 
     public IDataProtector CreateProtector() => _provider.CreateProtector(_options.Purpose);
 }

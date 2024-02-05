@@ -2,7 +2,7 @@
 using Microsoft.Extensions.Options;
 using System.Security.Cryptography;
 
-namespace UrlCryptography;
+namespace UrlEncryption;
 
 /// <summary>
 /// Middleware for decrypting URL path values.
@@ -12,48 +12,50 @@ namespace UrlCryptography;
 /// </para>
 /// </summary>
 /// <param name="next"></param>
-public class PathDecryptionMiddleware(RequestDelegate next)
+public class PathEncryptionMiddleware(RequestDelegate next)
 {
     private readonly RequestDelegate _next = next;
 
-    public async Task InvokeAsync(HttpContext context, IPathDecryption pathDecryption)
+    public async Task InvokeAsync(HttpContext context, IPathEncryption pathEncryption)
     {
-        pathDecryption.UpdateContext(context);
+        pathEncryption.Decrypt(context);
 
         await _next(context);
+
+        pathEncryption.Encrypt(context);
     }
 }
 
 /// <summary>
-/// Extension methods for configuring <see cref="PathDecryptionMiddleware"/>.
+/// Extension methods for configuring <see cref="PathEncryptionMiddleware"/>.
 /// </summary>
 public static class PathDecryptionMiddlewareExtensions
 {
     /// <summary>
-    /// Adds necessary services for the <see cref="PathDecryptionMiddleware"/> using the default <see cref="PathDecryptionOptions"/> values.
+    /// Adds necessary services for the <see cref="PathEncryptionMiddleware"/> using the default <see cref="PathDecryptionOptions"/> values.
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <returns></returns>
-    public static IServiceCollection AddPathDecryption(this IServiceCollection services)
+    public static IServiceCollection AddPathEncryption(this IServiceCollection services)
     {
-        AddPathDecryption(services, options => { });
+        AddPathEncryption(services, options => { });
 
         return services;
     }
 
     /// <summary>
-    /// Adds services for the <see cref="PathDecryptionMiddleware"/>.
+    /// Adds services for the <see cref="PathEncryptionMiddleware"/>.
     /// 
     /// Uses greedy
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="configureOptions"></param>
     /// <returns></returns>
-    public static IServiceCollection AddPathDecryption(this IServiceCollection services, Action<PathDecryptionOptions> configureOptions)
+    public static IServiceCollection AddPathEncryption(this IServiceCollection services, Action<PathDecryptionOptions> configureOptions)
     {
         services.AddDataProtection();
-        services.AddTransient<IPathCryptographyDataProtectionProvider, PathDecryptionDataProtectionProvider>();
-        services.AddTransient<IPathDecryption, GreedyPathDecryption>();
+        services.AddTransient<IPathEncryptionDataProtectionProvider, PathDecryptionDataProtectionProvider>();
+        services.AddTransient<IPathEncryption, PathEncryptionWithGreedyDecryption>();
 
         services.Configure<PathDecryptionOptions>(configureOptions);
 
@@ -62,7 +64,7 @@ public static class PathDecryptionMiddlewareExtensions
 
     /// <summary>
     /// <para>
-    /// Adds the <see cref="PathDecryptionMiddleware"/>.
+    /// Adds the <see cref="PathEncryptionMiddleware"/>.
     /// </para>
     /// <para>
     /// Must be called before <c>app.UseRouting()</c>.
@@ -70,16 +72,16 @@ public static class PathDecryptionMiddlewareExtensions
     /// </summary>
     /// <param name="app"></param>
     /// <returns></returns>
-    public static IApplicationBuilder UsePathDecryption(this IApplicationBuilder app)
+    public static IApplicationBuilder UsePathEncryption(this IApplicationBuilder app)
     {
-        app.UseMiddleware<PathDecryptionMiddleware>();
+        app.UseMiddleware<PathEncryptionMiddleware>();
 
         return app;
     }
 
     /// <summary>
     /// <para>
-    /// Adds the <see cref="PathDecryptionMiddleware"/> and <see cref="EndpointRoutingMiddleware"/> to the <paramref name="app"/>.
+    /// Adds the <see cref="PathEncryptionMiddleware"/> and <see cref="EndpointRoutingMiddleware"/> to the <paramref name="app"/>.
     /// </para>
     /// <para>
     /// Use this in place of <c>app.UseRouting()</c>.
@@ -87,9 +89,9 @@ public static class PathDecryptionMiddlewareExtensions
     /// </summary>
     /// <param name="app"></param>
     /// <returns></returns>
-    public static IApplicationBuilder UseRoutingWithDecryption(this IApplicationBuilder app)
+    public static IApplicationBuilder UseRoutingWithPathEncryption(this IApplicationBuilder app)
     {
-        app.UsePathDecryption();
+        app.UsePathEncryption();
 
         app.UseRouting();
 
@@ -99,20 +101,23 @@ public static class PathDecryptionMiddlewareExtensions
 
 public class PathDecryptionOptions
 {
-    public string Purpose { get; set; } = typeof(PathDecryptionMiddleware).FullName
-        ?? nameof(PathDecryptionMiddleware);
+    /// <summary>
+    /// The string used to create the <see cref="IDataProtector"/>.
+    /// </summary>
+    public string Purpose { get; set; } = typeof(PathEncryptionMiddleware).FullName
+        ?? nameof(PathEncryptionMiddleware);
 
     public bool ShowFullCryptographicException { get; set; } = false;
 }
 
-public interface IPathCryptographyDataProtectionProvider
+public interface IPathEncryptionDataProtectionProvider
     : ICryptographyMiddlewareDataProtectionProvider
 {
 }
 
 public class PathDecryptionDataProtectionProvider(
     IDataProtectionProvider provider,
-    IOptions<PathDecryptionOptions> pathDecryptionOptions) : IPathCryptographyDataProtectionProvider
+    IOptions<PathDecryptionOptions> pathDecryptionOptions) : IPathEncryptionDataProtectionProvider
 {
     private readonly IDataProtectionProvider _provider = provider;
     private readonly PathDecryptionOptions _options = pathDecryptionOptions.Value;
@@ -123,26 +128,36 @@ public class PathDecryptionDataProtectionProvider(
 /// <summary>
 /// An interface that provides path decryption services.
 /// </summary>
-public interface IPathDecryption
+public interface IPathEncryption
 {
     /// <summary>
-    /// Decrypts 
+    /// Decrypts URL path variables.
     /// </summary>
     /// <param name="path"></param>
     /// <returns></returns>
-    void UpdateContext(HttpContext context);
+    void Decrypt(HttpContext context);
+
+    /// <summary>
+    /// Encrypts URL path variables.
+    /// </summary>
+    /// <param name="context"></param>
+    void Encrypt(HttpContext context);
 }
 
 /// <summary>
-/// An <see cref="IPathProvider"/> implementation that attempts to decrypt each path segment.
+/// An <see cref="IPathEncryption"/> implementation that attempts to decrypt each path segment.
 /// </summary>
 /// <param name="dataProtectionProvider"></param>
-public class GreedyPathDecryption(
-    IPathCryptographyDataProtectionProvider dataProtectionProvider) : IPathDecryption
+public class PathEncryptionWithGreedyDecryption(
+    IPathEncryptionDataProtectionProvider dataProtectionProvider) : IPathEncryption
 {
     private readonly IDataProtector _dataProtector = dataProtectionProvider.CreateProtector();
 
-    public void UpdateContext(HttpContext context)
+    public void Encrypt(HttpContext context)
+    {
+    }
+
+    public void Decrypt(HttpContext context)
     {
         PathString? decryptedPath = DecryptPath(context.Request.Path);
 

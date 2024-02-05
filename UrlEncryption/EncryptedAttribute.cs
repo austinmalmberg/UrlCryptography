@@ -1,4 +1,4 @@
-﻿namespace UrlCryptography
+﻿namespace UrlEncryption
 {
     public class EncryptedAttribute : Attribute
     {

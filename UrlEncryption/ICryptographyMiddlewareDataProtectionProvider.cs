@@ -1,6 +1,6 @@
 ﻿using Microsoft.AspNetCore.DataProtection;
 
-namespace UrlCryptography;
+namespace UrlEncryption;
 
 /// <summary>
 /// An <see cref="IDataProtectionProvider"/> wrapper used to create <see cref="IDataProtector"/> instances using a predefined purpose.
